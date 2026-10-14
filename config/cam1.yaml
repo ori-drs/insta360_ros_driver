@@ -1,0 +1,20 @@
+image_width: 1920
+image_height: 1920
+camera_name: cam1
+distortion_model: fisheye
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data: [0.03252235879516494, -0.011727709324437773, -0.0022335496805661686, 0.000227674640513267]
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [620.734957, 0.0, 958.7276214, 0.0, 619.2126127, 957.7689678, 0.0, 0.0, 1.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [620.734957, 0.0, 958.7276214, 0.0, 0.0, 619.2126127, 957.7689678, 0.0, 0.0, 0.0, 1.0, 0.0]

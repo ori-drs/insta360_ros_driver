@@ -8,12 +8,15 @@
 
 #include <opencv2/opencv.hpp>
 
-#include "rclcpp/rclcpp.hpp"
-#include "rclcpp/qos.hpp"
-#include "sensor_msgs/msg/compressed_image.hpp"
-#include "sensor_msgs/msg/image.hpp"
-#include "cv_bridge/cv_bridge.hpp"
-#include "sensor_msgs/image_encodings.hpp"
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/qos.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <cv_bridge/cv_bridge.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <camera_info_manager/camera_info_manager.hpp>
+#include <image_transport/image_transport.hpp>
 
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -41,15 +44,20 @@ private:
     AVFrame* hw_frame_ = nullptr;
     AVFrame* sw_frame_ = nullptr;
     SwsContext* sws_ctx_ = nullptr;
-    cv::Mat bgr_frame_; 
+    cv::Mat bgr_frame_;
     AVBufferRef *hw_device_ctx_ = nullptr;
     enum AVHWDeviceType hw_type_ = AV_HWDEVICE_TYPE_NONE;
 
     rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr subscription_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
+    image_transport::CameraPublisher publisher_cam0_;
+    image_transport::CameraPublisher publisher_cam1_;
+    std::shared_ptr<camera_info_manager::CameraInfoManager> cinfo_manager_cam0_;
+    std::shared_ptr<camera_info_manager::CameraInfoManager> cinfo_manager_cam1_;
+
 
     std::thread publisher_thread_;
-    std::queue<cv::Mat> frame_publish_queue_;
+    std::queue<std::pair<cv::Mat,int64_t>> frame_publish_queue_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
     std::atomic<bool> stop_publisher_thread_{false};
@@ -58,6 +66,9 @@ private:
     int skip_frame_ = 0;
     int frame_counter_ = 0;
     bool i_frame_only_ = false;
+    
+    bool rotate_inwards_ = false;
+    bool rotate_outwards_ = false;
 
     void InitFFmpegDecoder() {
         hw_type_ = AV_HWDEVICE_TYPE_CUDA;
@@ -136,6 +147,7 @@ private:
     void PublisherThreadLoop() {
         while (!stop_publisher_thread_) {
             cv::Mat frame_to_publish;
+            int64_t frame_time_publish = 0;
             {
                 std::unique_lock<std::mutex> lock(queue_mutex_);
                 queue_cv_.wait(lock, [this] {
@@ -148,23 +160,67 @@ private:
                 if (frame_publish_queue_.empty()) {
                     continue;
                 }
-                frame_to_publish = frame_publish_queue_.front();
+                frame_to_publish = frame_publish_queue_.front().first;
+                frame_time_publish = frame_publish_queue_.front().second;
                 frame_publish_queue_.pop();
             }
 
             if (!frame_to_publish.empty() && publisher_) {
+
+
                 auto img_msg = std::make_unique<sensor_msgs::msg::Image>();
                 std_msgs::msg::Header header;
-                header.stamp = this->get_clock()->now();
-                header.frame_id = "camera_frame";
+                header.stamp = rclcpp::Time(frame_time_publish, RCL_SYSTEM_TIME); //this->get_clock()->now();
+                header.frame_id = "camera_optical_frame";
                 cv_bridge::CvImage cv_image(header, sensor_msgs::image_encodings::BGR8, frame_to_publish);
-                cv_image.toImageMsg(*img_msg);
-                publisher_->publish(std::move(img_msg));
+
+                if ( publisher_cam0_.getNumSubscribers() > 0 || publisher_cam1_.getNumSubscribers() > 0 )
+                {
+
+                    const int half_width = frame_to_publish.cols / 2;
+                    const int height = frame_to_publish.rows;
+                    cv::Mat left_mat = frame_to_publish(cv::Rect(0, 0, half_width, height));
+                    cv::Mat right_mat = frame_to_publish(cv::Rect(half_width, 0, half_width, height));
+
+                    if ( rotate_inwards_ )
+                    {
+                        cv::rotate( left_mat, left_mat, cv::ROTATE_90_CLOCKWISE);
+                        cv::rotate( right_mat, right_mat, cv::ROTATE_90_COUNTERCLOCKWISE);
+                    }
+                    else if ( rotate_outwards_ )
+                    {
+                        cv::rotate( left_mat, left_mat, cv::ROTATE_90_COUNTERCLOCKWISE);
+                        cv::rotate( right_mat, right_mat, cv::ROTATE_90_CLOCKWISE);
+                    }
+
+                    sensor_msgs::msg::Image::SharedPtr left_img_msg = cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, left_mat).toImageMsg();
+                    sensor_msgs::msg::Image::SharedPtr right_img_msg = cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, right_mat).toImageMsg();
+
+                    sensor_msgs::msg::CameraInfo left_info = cinfo_manager_cam0_->getCameraInfo();
+                    left_info.header.stamp = header.stamp;
+                    left_info.header.frame_id = "cam0_optical_frame";
+                    left_info.width = half_width;
+                    left_info.height = height;
+
+                    sensor_msgs::msg::CameraInfo right_info = cinfo_manager_cam1_->getCameraInfo();
+                    right_info.header.stamp = header.stamp;
+                    right_info.header.frame_id = "cam1_optical_frame";
+                    right_info.width = half_width;
+                    right_info.height = height;
+
+                    publisher_cam0_.publish(*left_img_msg, left_info);
+                    publisher_cam1_.publish(*right_img_msg, right_info);
+                }
+                if ( publisher_->get_subscription_count() > 0 )
+                {
+                    cv_image.toImageMsg(*img_msg);
+                    publisher_->publish(std::move(img_msg));
+                }
             }
         }
     }
 
-    void DecodeAndDisplayPacket(AVPacket* packet) {
+    void DecodeAndDisplayPacket(AVPacket* packet, const int64_t & timestamp_ns ) {
         int ret = avcodec_send_packet(codec_ctx_, packet);
         if (ret < 0) {
             return;
@@ -197,7 +253,7 @@ private:
                 if (!sws_ctx_) {
                     av_frame_unref(hw_frame_);
                     if (frame_to_display == sw_frame_) av_frame_unref(sw_frame_);
-                    return; 
+                    return;
                 }
                 bgr_frame_.create(frame_to_display->height, frame_to_display->width, CV_8UC3);
             }
@@ -224,7 +280,7 @@ private:
                     {
                         std::lock_guard<std::mutex> lock(queue_mutex_);
                         if (frame_publish_queue_.size() < max_queue_size_) {
-                            frame_publish_queue_.push(frame_copy);
+                            frame_publish_queue_.push({frame_copy,timestamp_ns});
                         }
                     }
                     queue_cv_.notify_one();
@@ -256,7 +312,7 @@ private:
             pkt_ = nullptr;
         }
         if (codec_ctx_) {
-            avcodec_close(codec_ctx_); 
+            avcodec_close(codec_ctx_);
             avcodec_free_context(&codec_ctx_);
             codec_ctx_ = nullptr;
         }
@@ -289,43 +345,50 @@ private:
                                                 cur_data, static_cast<int>(remaining_size),
                                                 AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
             if (bytes_parsed < 0) {
-                break; 
+                break;
             }
             cur_data += bytes_parsed;
             remaining_size -= bytes_parsed;
 
-            if (pkt_->size > 0) {
-                // Check if this is an I-frame when i_frame_only mode is enabled
-                if (i_frame_only_) {
-                    // Parse NAL unit type from H.264 stream
-                    // The parser sets keyframe flag for I-frames
-                    if (parser_ctx_->key_frame == 1) {
-                        DecodeAndDisplayPacket(pkt_);
-                    }
-                } else {
-                    DecodeAndDisplayPacket(pkt_);
-                }
-            }
+            if (pkt_->size <= 0) continue;
+
+            // Check if this is an I-frame when i_frame_only mode is enabled
+            if (i_frame_only_ && parser_ctx_->key_frame != 1) continue;
+
+            // Parse NAL unit type from H.264 stream
+            // The parser sets keyframe flag for I-frames
+            DecodeAndDisplayPacket(pkt_, rclcpp::Time(msg->header.stamp).nanoseconds());
         }
     }
 
 public:
     H264DecoderNode() : Node("h264_decoder_node") {
-        this->declare_parameter("compressed_topic", "/dual_fisheye/image/compressed");
-        this->declare_parameter("uncompressed_topic", "/dual_fisheye/image");
+        this->declare_parameter("compressed_topic", "/insta/dual_fisheye/image/compressed");
+        this->declare_parameter("uncompressed_topic", "/insta/dual_fisheye/image");
         this->declare_parameter("skip_frame", 0);
         this->declare_parameter("i_frame_only", false);
+        this->declare_parameter("rotate_inwards", false);
+        this->declare_parameter("rotate_outwards", false);
 
         std::string subscribe_topic = this->get_parameter("compressed_topic").as_string();
         std::string publish_topic = this->get_parameter("uncompressed_topic").as_string();
         skip_frame_ = this->get_parameter("skip_frame").as_int();
         i_frame_only_ = this->get_parameter("i_frame_only").as_bool();
+        rotate_inwards_ = this->get_parameter("rotate_inwards").as_bool();
+        rotate_outwards_ = this->get_parameter("rotate_outwards").as_bool();
 
         subscription_ = this->create_subscription<sensor_msgs::msg::CompressedImage>(
             subscribe_topic, 10,
             std::bind(&H264DecoderNode::compressed_image_callback, this, std::placeholders::_1));
 
         publisher_ = this->create_publisher<sensor_msgs::msg::Image>(publish_topic, 10);
+
+        std::string cinfo_url_0 = "package://insta360_ros_driver/config/cam0.yaml";
+        std::string cinfo_url_1 = "package://insta360_ros_driver/config/cam1.yaml";
+        cinfo_manager_cam0_ = std::make_shared<camera_info_manager::CameraInfoManager>(this, "cam0", cinfo_url_0);
+        cinfo_manager_cam1_ = std::make_shared<camera_info_manager::CameraInfoManager>(this, "cam1", cinfo_url_1);
+        publisher_cam0_ = image_transport::create_camera_publisher(this, "insta/cam0/image_raw");
+        publisher_cam1_ = image_transport::create_camera_publisher(this, "insta/cam1/image_raw");
 
         publisher_thread_ = std::thread(&H264DecoderNode::PublisherThreadLoop, this);
         

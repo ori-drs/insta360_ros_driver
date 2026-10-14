@@ -5,6 +5,8 @@ include/camera/*
 include/stream/*
 .vscode
 *.pyc
+*.zip
+Linux*
 
 !bag/raw/.gitkeep
 !bag/compressed/.gitkeep

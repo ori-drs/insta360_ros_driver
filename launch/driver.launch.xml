@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="driver" default="true"/>
+    <arg name="decoder" default="true"/>
+
+    <!-- Publishes Compressed Images -->
+    <node if="$(var driver)" pkg="insta360_ros_driver" exec="insta360_ros_driver" name="insta360_ros_driver" output="screen"/>
+
+    <!-- Decodes Compressed Images -->
+    <node if="$(var decoder)" pkg="insta360_ros_driver" exec="decoder" name="image_decoder" output="log">
+        <param name="compressed_topic" value="/insta/dual_fisheye/image/compressed"/>
+        <param name="uncompressed_topic" value="/insta/dual_fisheye/image"/>
+        <!-- We can skip decoding every <skip_frame>. So skip_frame = 1 will only publish half the frames, etc. -->
+        <param name="skip_frame" value="0"/>
+        <!-- If you want to minimize the CPU load the most, you can decode only the i-frames. But the expected FPS is about 1-2 FPS -->
+        <param name="i_frame_only" value="false"/> 
+        <!-- rotate individual camera frames, RS 1-inch: rotate outwards -->
+        <param name="rotate_inwards" value="false"/> 
+        <param name="rotate_outwards" value="true"/> 
+    </node>
+</launch>
