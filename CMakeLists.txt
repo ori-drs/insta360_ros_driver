@@ -13,7 +13,7 @@ find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(imu_tools REQUIRED)
+#find_package(imu_tools REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -75,41 +75,41 @@ ament_target_dependencies(decoder
 )
 
 # Add C++ equirectangular node
-add_executable(equirectangular_cpp src/equirectangular.cpp)
+#add_executable(equirectangular_cpp src/equirectangular.cpp)
 
-target_link_libraries(equirectangular_cpp ${OpenCV_LIBRARIES})
+#target_link_libraries(equirectangular_cpp ${OpenCV_LIBRARIES})
 
-ament_target_dependencies(equirectangular_cpp
-  rclcpp
-  cv_bridge
-  OpenCV
-)
+#ament_target_dependencies(equirectangular_cpp
+#  rclcpp
+#  cv_bridge
+#  OpenCV
+#)
 
 # Perspective Node
-add_executable(perspective_cpp src/perspective.cpp)
+#add_executable(perspective_cpp src/perspective.cpp)
 
-target_link_libraries(perspective_cpp ${OpenCV_LIBRARIES} Eigen3::Eigen)
+#target_link_libraries(perspective_cpp ${OpenCV_LIBRARIES} Eigen3::Eigen)
 
-ament_target_dependencies(perspective_cpp
-  rclcpp
-  cv_bridge
-  OpenCV
-  tf2_geometry_msgs
-  geometry_msgs
-)
+#ament_target_dependencies(perspective_cpp
+#  rclcpp
+#  cv_bridge
+#  OpenCV
+#  tf2_geometry_msgs
+#  geometry_msgs
+#)
 
 # Install Nodes
-install(TARGETS ${PROJECT_NAME} decoder equirectangular_cpp perspective_cpp
+install(TARGETS ${PROJECT_NAME} decoder #equirectangular_cpp perspective_cpp
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # Python Nodes
-ament_python_install_package(${PROJECT_NAME})
+#ament_python_install_package(${PROJECT_NAME})
 
-install(PROGRAMS
-  scripts/equirectangular.py
-  scripts/calibrate.py
-  DESTINATION lib/${PROJECT_NAME}
-)
+#install(PROGRAMS
+#  scripts/equirectangular.py
+#  scripts/calibrate.py
+#  DESTINATION lib/${PROJECT_NAME}
+#)
 
 ament_package()

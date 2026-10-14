@@ -1,7 +1,15 @@
-# CHANGES OF THIS FORK
-- Dynamic parameters change works correctly
-- Equirectangular node is now more efficient
-- Perspective node have been added. You can control fov through parameters and camera orientation by publishing to: /&#8288;camera_orientation/&#8288;quaternion
+# CHANGES to previous... 
+- Driver is tested on Ubuntu 24.04 with ROS2 Jazzy using Insta360 RS-1inch and X5 cameras.
+- Resolution: 3840x1920, can be changed in main.cpp
+- Requires SDK. DO NOT add the SDK to the REPO, due to copyright! 
+- Deactivated imu_tools from IMU meas
+- Timesync with ROS: averaging offset over last N messages
+- Timestamping for IMU messages added.
+- Timestamping for Images retained during decoding ( assumes single compressed for each ).
+- Caveat: raw sdk stamps for IMU and Camera seem to diverge over time (IMU runs ahead after sometime by mutiple seconds), but frames appear consistent.
+- Split launch file to separate for capturing / processing (e.g. capture on robot w/o decoding, process offboard)
+- Added camera_info for both images.
+- Added publishing of individual fisheye images for both cameras.
 
 # insta360_ros_driver
 
@@ -11,7 +19,6 @@ A ROS driver for the Insta360 cameras. This driver is tested on Ubuntu 22.04 wit
 - 2304 x 1152
 - 1920 x 960
 
-You can change [this line](https://github.com/ai4ce/insta360_ros_driver/blob/79588d9e0e9d029c3371d4095ea718daaf1e06fb/src/main.cpp#L126) to edit the resolution.
 
 ## Installation
 To use this driver, you need to first have Insta360 SDK. Please apply for the SDK from the [Insta360 website](https://www.insta360.com/sdk/home). 
@@ -22,16 +29,15 @@ For additional instructions, see this [post](https://github.com/ai4ce/insta360_r
 
 ```
 cd ~/ros2_ws/src
-git clone -b humble https://github.com/ai4ce/insta360_ros_driver
+git clone https://github.com/ori-drs/insta360_ros_driver
 cd ..
 ```
 Then, the Insta360 libraries need to be installed as follows:
 - add the <code>camera</code> and <code>stream</code> header files inside the <code>include</code> directory
 - add the <code>libCameraSDK.so</code> library under the <code>lib</code> directory.
 
-Afterwards, install the other required dependencies and build
+Afterwards, install the other required dependencies and build.
 ```
-rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -51,8 +57,6 @@ cd ~/ros2_ws/src/insta360_ros_driver
 ```
 This creates a symlink  based on the vendor ID of Insta360 cameras. The symlink, in this case <code>/dev/insta</code> is used to grant permissions to the usb port used by the camera.
 
-![setup](docs/setup.png)
-
 **Sometimes, this does not work (e.g. you see "device /dev/insta not found" or something similar). You can try entering the commands manually, since that sometimes sees success, especially for the first time.**
 ```
 echo SUBSYSTEM=='"usb"', ATTR{manufacturer}=='"Arashi Vision"', SYMLINK+='"insta"', MODE='"0777"' | sudo tee /etc/udev/rules.d/99-insta.rules
@@ -62,75 +66,28 @@ sudo chmod 777 /dev/insta
 ```
 
 ## Usage
-The camera provides images natively in H264 compressed image format. We have a decoder node that 
-
-### Camera Bringup
-The camera can be brought up with the following launch file
-```
-ros2 launch insta360_ros_driver bringup.launch.xml
-```
-![bringup](docs/bringup_rqt.png)
-
-A dual fisheye image will be published.
-
-![dual_fisheye](docs/dual_fisheye.png)
-
-#### Published Topics
-- /dual_fisheye/image
-- /dual_fisheye/image/compressed
-- /equirectangular/image
-- /imu/data
-- /imu/data_raw
-
-The launch file has the following optional arguments:
-- equirectangular (default="false")
-
-This publishes equirectangular images. You can configure these parameters in `config/equirectangular.yaml`.
-![equirectangular](docs/equirectangular.png)
-
-- imu_filter (default="true")
-
-This uses the [imu_filter_madgwick](https://wiki.ros.org/imu_filter_madgwick) package to approximate orientation from the IMU. Note that by default, we publish `/imu/data_raw` which only contains linear acceleration and angular velocity. The madgwick filter uses this information to publish orientation to `/imu/data`. You can configure the filter in `config/imu_filter.yaml`. 
-
-![IMU](https://github.com/user-attachments/assets/02b50cad-8415-4dde-9014-9ab3a4d415b9)
-
-## Equirectangular Calibration
-You can adjust the extrinsic parameters used to improve the equirectangular image. 
-```
-# Run the camera driver
-ros2 run insta360_ros_driver insta360_ros_driver
-# Activate image decoding
-ros2 run insta360_ros_driver decoder
-# Run the equirectangular node in calibration mode
-ros2 run insta360_ros_driver equirectangular.py --calibrate
-```
-This will open an app to adjust the extrinsics. You can press 's' to get the parameters in YAML format. **Note that you need to press 'a' to update the image preview after changing the intrinsics with the GUI**
-![Equirectangular Calibration](docs/calibration.png)
-
-Pressing 's' will return the parameters via the terminal. You can copy paste this onto the configuration file as needed. By default, the launch file reads this from `config/equirectangular.yaml`
+The camera provides images natively in H264 compressed image format. 
+A driver node connects with the camera to publish the H264 compressed data. 
+A separate decoder node can decode this video and publish the dual fisheye image or run without the driver on a separate system.
+Both nodes can be run indepently by deactivating them during launch.
 
 ```
-==================================================
-CALIBRATION PARAMETERS (YAML FORMAT)
-==================================================
-equirectangular_node:
-  ros__parameters:
-    cx_offset: 0.0
-    cy_offset: 0.0
-    crop_size: 960
-    translation: [0.0, 0.0, -0.105]
-    rotation_deg: [-0.5, 0.0, 1.1]
-    gpu: True
-    out_width: 1920
-    out_height: 960
-==================================================
+ros2 launch insta360_ros_driver driver.launch.xml driver:=true decoder:=true
 ```
 
-Note that decode.py will most likely drop frames depending on your system. If you do not care about live processing, you can simply record the `/dual_fisheye/image/compressed` topic and decompress it later after recording.
-```
-ros2 bag record /dual_fisheye/image /imu/data_raw
-```
+## Published Topics
+- /insta/dual_fisheye/image
+- /insta/dual_fisheye/image/compressed
+- /insta/cam0/camera_info
+- /insta/cam0/image_raw
+- /insta/cam0/image_raw/compressed
+- /insta/cam1/camera_info
+- /insta/cam1/image_raw
+- /insta/cam1/image_raw/compressed
+- /insta/imu/data_raw
 
-## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ai4ce/insta360_ros_driver&type=Date)](https://star-history.com/#ai4ce/insta360_ros_driver&Date)
+If you do not care about live processing, you can simply record the `/insta/dual_fisheye/image/compressed` topic and decompress it later after recording.
+```
+ros2 bag record /insta/dual_fisheye/image /insta/imu/data_raw
+```
